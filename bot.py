@@ -212,9 +212,16 @@ while True:
             continue
 
         sender = (msg.get("from") or {}).get("id")
-        if text.lower().startswith("qarz") and sender == OWNER_ID:
+        owner_q = None
+        if sender == OWNER_ID:
+            compact = re.sub(r"\s+", "", text)
+            if text.lower().startswith("qarz"):
+                owner_q = text[4:].strip().lower()
+            elif re.fullmatch(r"\d{9}|\d{14}", compact):   # faqat INN yozilsa ham qarzni ko'rsatadi
+                owner_q = compact
+        if owner_q is not None:
             if msg["chat"].get("type") == "private":
-                tg("sendMessage", chat_id=chat, text=find_debts(text[4:].strip().lower()))
+                tg("sendMessage", chat_id=chat, text=find_debts(owner_q))
             else:
                 tg("sendMessage", chat_id=chat,
                    text="🔒 Qarz ma'lumoti guruhda ko'rsatilmaydi. Menga shaxsiy chatda yozing.")
