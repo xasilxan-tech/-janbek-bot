@@ -3,7 +3,7 @@ import os, io, json, re, time, csv, datetime, requests
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 AI_KEY = os.environ["ANTHROPIC_API_KEY"]
 OWNER_ID = int(os.environ.get("OWNER_ID", "721769003"))
-MODEL = "claude-haiku-5-5"
+MODEL = os.environ.get("MODEL", "claude-haiku-5-5")
 TG = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
 SHEET_TTL = int(os.environ.get("SHEET_TTL", "600"))  # soniya: jadvalni qancha tez-tez yangilash
@@ -43,19 +43,21 @@ def fetch_csv(url, fallback_file):
 
 def system_prompt():
     PRICES = fetch_csv(os.environ.get("PRICE_SHEET_URL"), "narxlar_2026.csv")
-    return f"""Sen "Fermer ham texnika" kanalining yordamchisisan. Qishloq xo'jaligi texnikalari bo'yicha ma'lumot berasan. Biz texnika sotamiz va eski texnikani sotib olamiz.
+    return f"""You are the assistant of the Telegram channel "Fermer ham texnika" (agricultural machinery). The business sells new machinery, orders machinery from factories, and buys and sells used machinery.
 
-Qoidalar:
-- Faqat qoraqalpoq tilida, kirill alifbosida javob ber.
-- Narx so'ralsa, quyidagi ro'yxatdagi ZAVOD NARXINI ayt. Ro'yxatda yo'q texnika haqida taxmin qilma, "Aniq ma'lumot uchun operator bilan bog'laning" deb ayt.
-- Har narxdan keyin "Narx o'zgarishi mumkin, aniq narxni operator tasdiqlaydi" deb qo'sh.
-- Mijoz buyurtma bermoqchi bo'lsa, ketma-ket so'ra: ism, telefon raqami, kerakli texnika, hudud (viloyat/tuman).
-- 4 ta ma'lumot to'liq bo'lgach, javobingning oxirida faqat bitta qator yoz:
+LANGUAGE (the most important rule): ALWAYS answer in the Karakalpak language, written ONLY in the Karakalpak Cyrillic alphabet (letters such as ә, ғ, қ, ң, ө, ү, ў, ҳ, ы). NEVER answer in Latin letters, and never in Uzbek or Russian, even if the customer writes in Latin letters, Uzbek or Russian. You understand all of these, but you always reply in Karakalpak Cyrillic. Keep machine model names (for example DF 804, LOVOL 904) and numbers exactly as they appear in the list.
+
+RULES:
+- If asked about a price, give the FACTORY PRICE from the list below (in so'm, written as "сум"). After the price add a short note that the price may change and that the operator confirms the exact price.
+- Only use machinery and prices from the list. If something is not in the list, do not guess: say that the operator will give exact information.
+- If the customer wants to order, ask one by one: name, phone number, desired machine, region (viloyat/tuman).
+- When all 4 pieces of information are collected, end your reply with exactly one extra line, and nothing after it:
 BUYURTMA: {{"ism": "...", "telefon": "...", "texnika": "...", "hudud": "..."}}
-Bu qatorni mijozga ko'rsatilmaydi, uni dastur o'zi olib tashlaydi.
-- Javoblar qisqa va aniq bo'lsin.
+The customer never sees this line, the program removes it. Write the values as the customer gave them.
+- Never talk about debts, other customers, or anything that is not in this message.
+- Keep answers short and clear.
 
-Zavod narxlari ro'yxati (etkazib beruvchi, tur, rusum, narx so'mda):
+FACTORY PRICE LIST (CSV columns: supplier, type, model, factory price in so'm):
 {PRICES}
 """
 
@@ -206,7 +208,7 @@ while True:
         if text == "/start":
             histories.pop(chat, None)
             tg("sendMessage", chat_id=chat,
-               text="Assalomu alaykum! Texnika bo'yicha savolingizni yozing.")
+               text="Ассалаўма әлейкум! Техника бойынша сораўыңызды жазың.")
             continue
 
         sender = (msg.get("from") or {}).get("id")
@@ -227,7 +229,7 @@ while True:
         except Exception as e:
             print("AI xato:", e)
             tg("sendMessage", chat_id=OWNER_ID, text="AI XATO: " + str(e)[:800])
-            reply = "Kechirasiz, hozir javob bera olmayman. Keyinroq urinib ko'ring."
+            reply = "Кеширесиз, ҳәзир жуўап бере алмайман. Кейинирек қайта урынып көриң."
         hist.append({"role": "assistant", "content": reply})
 
         clean = reply
@@ -258,6 +260,6 @@ while True:
             except Exception as e:
                 print("Buyurtma xato:", e)
             if not clean:
-                clean = "Rahmat! Buyurtmangiz qabul qilindi, operator tez orada siz bilan bog'lanadi."
+                clean = "Рахмет! Буйыртпаңыз қабыл етилди, оператор тез арада сиз бенен байланысады."
 
         tg("sendMessage", chat_id=chat, text=clean)
