@@ -7,7 +7,8 @@ Hár kúni MON_REPORT_HOUR (Tashkent) waqtında svod + Excel dizim jiberiledi.
 Railway ózgeriwshileri:
   MON_URL          Apps Script veb-qosımshasınıń URL'i (bolmasa monitoring óshirili)
   MON_KEY          Code_monitoring.gs ishindegi API_KEY menen birdey
-  MON_STAFF_IDS    monitoring isleytuǵın xızmetkerlerdiń Telegram ID'leri, útir menen (OWNER_ID ózi kiredi)
+  MON_STAFF_IDS    BARLIQ rayonlardı kóretuǵın adminlerdiń Telegram ID'leri, útir menen (OWNER_ID ózi kiredi)
+  vakillar.csv     rayon vakilleri: hár biri tek óz rayonın kóredi (Rayon,ID,Ism; ID ornında * = barlıq vakillerge)
   MON_REPORT_CHATS kúnlik esabat barıwı kerek chatlar, útir menen (bos bolsa OWNER_ID)
   MON_REPORT_HOUR  esabat saatı, Tashkent waqtı (ádette 9)
 """
@@ -25,7 +26,10 @@ SESSION_TTL = 3 * 3600  # juwapsız qalǵan sessiya neshe waqıttan keyin óshir
 _tg = None
 _token = ""
 _owner = 0
-STAFF = set()
+STAFF = set()           # monitoring isley alatuǵınlardıń barlıǵı (adminler + vakiller)
+ADMINS = set()          # barlıq rayonlardı kóredi
+ACCESS = {}             # vakil ID -> {norm(rayon)}
+OPEN_DISTRICTS = set()  # vakillar.csv'de ID ornında "*" turǵan rayonlar
 REPORT_CHATS = []
 
 INN = {}          # INN -> [(rayon, fermer)]
@@ -42,13 +46,33 @@ _daily = {"day": "", "next_try": 0.0}
 # ---------------------------------------------------------------- tiykarǵı
 
 def setup(tg, token, owner_id):
-    global _tg, _token, _owner, STAFF, REPORT_CHATS
+    global _tg, _token, _owner, STAFF, ADMINS, REPORT_CHATS
     _tg, _token, _owner = tg, token, owner_id
-    STAFF = {owner_id} | {int(x) for x in re.findall(r"-?\d+", os.environ.get("MON_STAFF_IDS", ""))}
+    ADMINS = {owner_id} | {int(x) for x in re.findall(r"-?\d+", os.environ.get("MON_STAFF_IDS", ""))}
+    load_access()
+    STAFF = ADMINS | set(ACCESS)
     REPORT_CHATS = [int(x) for x in re.findall(r"-?\d+", os.environ.get("MON_REPORT_CHATS", ""))] or [owner_id]
     load_inn()
     print("Monitoring:", "qosılǵan" if enabled() else "óshirili (MON_URL joq)",
-          f"| xızmetkerler: {len(STAFF)} | INN: {len(INN)}")
+          f"| adminler: {len(ADMINS)} | rayon vakilleri: {len(ACCESS)} | INN: {len(INN)}", flush=True)
+
+
+def load_access():
+    ACCESS.clear()
+    OPEN_DISTRICTS.clear()
+    try:
+        with open("vakillar.csv", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                d = norm(r.get("Rayon") or "")
+                ids = r.get("ID") or ""
+                if not d:
+                    continue
+                if "*" in ids:
+                    OPEN_DISTRICTS.add(d)
+                for x in re.findall(r"\d+", ids):
+                    ACCESS.setdefault(int(x), set()).add(d)
+    except FileNotFoundError:
+        print("Monitoring: vakillar.csv tabılmadı, tek adminler isley aladı", flush=True)
 
 
 def enabled():
@@ -57,6 +81,22 @@ def enabled():
 
 def is_staff(uid):
     return uid in STAFF
+
+
+def is_admin(uid):
+    return uid in ADMINS
+
+
+def allowed(uid, d):
+    """Bul adam usı rayonnıń monitoringin isley ala ma?"""
+    if uid in ADMINS:
+        return True
+    nd = norm(d)
+    return nd in ACCESS.get(uid, ()) or (uid in ACCESS and nd in OPEN_DISTRICTS)
+
+
+def my_districts(uid):
+    return [d for d in districts() if allowed(uid, d)]
 
 
 def safe(e):
@@ -246,7 +286,7 @@ def handle_photo(msg):
         send(chat, "⏳ Aldıńǵı slayt saqlanıp atır. Ol tayar bolǵannan keyin jańa súwretlerdi jiberiń.")
         return True
     if not s or time.time() - s.get("t", 0) > SESSION_TTL:
-        s = S[chat] = {"photos": [], "stage": "who", "t": time.time()}
+        s = S[chat] = {"photos": [], "stage": "who", "t": time.time(), "uid": frm.get("id")}
     if len(s["photos"]) >= MAX_PHOTOS:
         if not s.get("warned"):
             s["warned"] = True
@@ -269,9 +309,27 @@ def show_who(chat, s):
     edit(chat, s["mid"], who_text(s), who_kb())
 
 
+def pick_district(chat, s, d):
+    s["d"] = d
+    fs = farmers(d)
+    if len(fs) <= PAGE:
+        s.pop("letters", None)
+        show_farmers(chat, s, [(d, o) for o in fs])
+    else:
+        show_letters(chat, s)
+
+
 def show_districts(chat, s):
     s["stage"] = "district"
-    s["dl"] = districts()
+    s["dl"] = my_districts(s.get("uid"))
+    if not s["dl"]:
+        edit(chat, s["mid"], "Sizge hesh bir rayon biriktirilmegen.", [[btn("❌ Biykar", "x")]])
+        return
+    if len(s["dl"]) == 1:          # vakilge tek óz rayonı: birden fermerlerge ótemiz
+        s["single"] = True
+        pick_district(chat, s, s["dl"][0])
+        return
+    s.pop("single", None)
     left = {}
     for r in rows():
         if not done(r):
@@ -289,7 +347,7 @@ def show_letters(chat, s):
     for o in fs:
         counts[letter(o)] = counts.get(letter(o), 0) + 1
     b = [btn(f"{ch} ({n})", f"l:{ch}") for ch, n in sorted(counts.items())]
-    kb = grid(b, 4) + [[btn("⬅️ Artqa", "bk:d"), btn("❌ Biykar", "x")]]
+    kb = grid(b, 4) + [[btn("⬅️ Artqa", "bk:w" if s.get("single") else "bk:d"), btn("❌ Biykar", "x")]]
     edit(chat, s["mid"], f"📍 {s['d']}\n\nFermer atınıń birinshi háribin tańlań:", kb)
 
 
@@ -399,7 +457,7 @@ def handle_callback(cq):
         return
     try:
         if data.startswith(("bd:", "bt:", "qd:")):
-            return list_callback(chat, mid, data)
+            return list_callback(chat, mid, data, frm.get("id"))
         s = S.get(chat)
         if not s or s.get("mid") != mid:
             edit(chat, mid, "Bul sorawdıń waqtı ótken. Súwretlerdi qaytadan jiberiń.")
@@ -420,13 +478,7 @@ def handle_callback(cq):
         elif data == "bk:w":
             show_who(chat, s)
         elif data.startswith("d:"):
-            s["d"] = s["dl"][int(data[2:])]
-            fs = farmers(s["d"])
-            if len(fs) <= PAGE:
-                s.pop("letters", None)
-                show_farmers(chat, s, [(s["d"], o) for o in fs])
-            else:
-                show_letters(chat, s)
+            pick_district(chat, s, s["dl"][int(data[2:])])
         elif data.startswith("l:"):
             ch = data[2:]
             show_farmers(chat, s, [(s["d"], o) for o in farmers(s["d"]) if letter(o) == ch])
@@ -435,6 +487,8 @@ def handle_callback(cq):
                 show_who(chat, s)
             elif s.get("letters"):
                 show_letters(chat, s)
+            elif s.get("single"):
+                show_who(chat, s)
             else:
                 show_districts(chat, s)
         elif data.startswith("p:"):
@@ -448,7 +502,11 @@ def handle_callback(cq):
             else:
                 show_who(chat, s)
         elif data.startswith("t:"):
-            s["row"] = int(data[2:])
+            r = row_by(int(data[2:]))
+            if not r or not allowed(frm.get("id"), r["d"]):
+                edit(chat, mid, "⛔ Bul texnika sizdiń rayonıńızǵa tiyisli emes.", [[btn("❌ Biykar", "x")]])
+                return
+            s["row"] = r["r"]
             show_confirm(chat, s)
         elif data == "bk:t":
             show_techs(chat, s)
@@ -495,14 +553,16 @@ def handle_text(msg):
             S.pop(chat, None)
             send(chat, "❌ Monitoring sessiyası biykar etildi.")
             return True
+        uid = frm.get("id")
         if cmd == "/esabat":
             send(chat, "⏳ Esabat tayarlanıp atır...")
-            send_report([chat], daily=False)
+            only = None if is_admin(uid) else {norm(d) for d in my_districts(uid)}
+            send_report([chat], daily=False, only=only)
             return True
         if cmd == "/qaldi":
-            return list_command(chat, arg, "q")
+            return list_command(chat, uid, arg, "q")
         if cmd == "/blanka":
-            return list_command(chat, arg, "b")
+            return list_command(chat, uid, arg, "b")
         if cmd in ("/monitoring", "/komek"):
             send(chat, HELP)
             return True
@@ -538,6 +598,12 @@ def find_by_inn(chat, s, text):
                 pairs.append((r["d"], r["o"]))
                 break
     s["inn_mode"] = True
+    mine = [p for p in pairs if allowed(s.get("uid"), p[0])]
+    if pairs and not mine:
+        send(chat, f"⛔ {inn}: bul fermer {pairs[0][0]} rayonına tiyisli. Siz tek óz rayonıńızdı isley alasız.\n"
+                   "Basqa INN jazıń yamasa /bekor.")
+        return
+    pairs = mine
     if not pairs:
         r = send(chat, f"🔢 {inn} boyınsha fermer tabılmadı. Rayon arqalı izleń:",
                  [[btn("📍 Rayon", "w:r"), btn("❌ Biykar", "x")]])
@@ -554,25 +620,28 @@ def find_by_inn(chat, s, text):
         show_farmers(chat, s, pairs)
 
 
-def resolve_district(arg):
+def resolve_district(arg, dl):
     a = norm(arg)
     if not a:
         return None
-    for d in districts():
+    for d in dl:
         if norm(d).startswith(a) or norm(short(d)).startswith(a):
             return d
     return None
 
 
-def list_command(chat, arg, kind):
-    d = resolve_district(arg)
+def list_command(chat, uid, arg, kind):
+    dl = my_districts(uid)
+    if not dl:
+        send(chat, "Sizge hesh bir rayon biriktirilmegen.")
+        return True
+    d = resolve_district(arg, dl) or (dl[0] if len(dl) == 1 else None)
     if d:
         if kind == "q":
             send_left_list(chat, d)
         else:
             show_blanka_list(chat, None, d)
         return True
-    dl = districts()
     L[chat] = dl
     if kind == "q":
         cnt = {x: sum(1 for r in rows() if r["d"] == x and not done(r)) for x in dl}
@@ -626,17 +695,19 @@ def show_blanka_list(chat, mid, d, note=""):
         send(chat, text, kb)
 
 
-def list_callback(chat, mid, data):
+def list_callback(chat, mid, data, uid):
     if data.startswith(("bd:", "qd:")):
-        dl = L.get(chat) or districts()
+        dl = L.get(chat) or my_districts(uid)
         d = dl[int(data[3:])]
+        if not allowed(uid, d):
+            return
         if data.startswith("qd:"):
             send_left_list(chat, d)
         else:
             show_blanka_list(chat, mid, d)
         return
     r = row_by(int(data[3:]))
-    if not r:
+    if not r or not allowed(uid, r["d"]):
         send(chat, "Texnika tabılmadı.")
         return
     gas("blanka", row=r["r"], owner=r["o"], tech=r["t"])
@@ -726,13 +797,18 @@ def report_xlsx(svod, all_rows, date):
     return bio.getvalue()
 
 
-def send_report(chats, daily):
+def send_report(chats, daily, only=None):
+    """only: rayonlar (norm) — vakilge tek óz rayonları kórsetiledi; None = barlıǵı."""
     res = gas("report", daily=daily)
     if res.get("skip"):
         return False
     svod, date = res["svod"], res["date"]
+    all_rows = res.get("rows", [])
+    if only is not None:
+        svod = [a for a in svod if norm(a["d"]) in only]
+        all_rows = [r for r in all_rows if norm(r["d"]) in only]
     text = report_text(svod, date)
-    xlsx = report_xlsx(svod, res.get("rows", []), date)
+    xlsx = report_xlsx(svod, all_rows, date)
     for c in chats:
         _tg("sendMessage", chat_id=c, text=text, parse_mode="HTML")
         try:
