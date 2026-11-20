@@ -1,4 +1,5 @@
 import os, io, json, re, time, csv, datetime, requests
+import monitoring as mon
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 AI_KEY = os.environ["ANTHROPIC_API_KEY"]
@@ -318,6 +319,7 @@ NOT_NOW = "Ҳәзир мағлыўматты көрсете алмайман. К
 
 def handle(msg):
     if "text" not in msg:
+        mon.handle_photo(msg)   # xızmetkerdiń monitoring súwretleri
         return
     chat = msg["chat"]["id"]
     text = msg["text"]
@@ -326,7 +328,11 @@ def handle(msg):
     sender = frm.get("id")
     who = frm.get("username") or frm.get("first_name", "")
 
+    if mon.handle_text(msg):    # /esabat, /qaldi, /blanka, /bekor hám monitoringtegi INN
+        return
+
     if text == "/start":
+        mon.S.pop(chat, None)
         histories.pop(chat, None)
         watch(msg, "/start")
         tg("sendMessage", chat_id=chat,
@@ -408,6 +414,8 @@ def handle(msg):
     hist = histories.setdefault(chat, [])
     hist.append({"role": "user", "content": text})
     hist[:] = hist[-20:]
+    while hist and hist[0]["role"] != "user":   # Claude API birinshi xabardıń "user" bolıwın talap etedi
+        hist.pop(0)
 
     try:
         reply = ask_ai(hist)
@@ -451,6 +459,7 @@ def handle(msg):
 
 def main():
     load_state()
+    mon.setup(tg, BOT_TOKEN, OWNER_ID)
     offset = 0
     print("Bot ishga tushdi.")
     while True:
@@ -462,13 +471,20 @@ def main():
             continue
         for u in ups:
             offset = u["update_id"] + 1
-            msg = u.get("message")
-            if not msg:
-                continue
             try:
+                if u.get("callback_query"):
+                    mon.handle_callback(u["callback_query"])
+                    continue
+                msg = u.get("message")
+                if not msg:
+                    continue
                 handle(msg)
             except Exception as e:
-                print("Xato:", type(e).__name__)
+                print("Xato:", mon.safe(e)[:300])
+        try:
+            mon.tick()                       # saat 9 daǵı kúnlik esabat
+        except Exception as e:
+            print("Esabat xato:", mon.safe(e)[:300])
 
 if __name__ == "__main__":
     main()
